@@ -77,10 +77,6 @@ Default:
 
 Stacks are ignored for this calculation. For example, a stack of cheap runes will not be tracked just because the stack total is high.
 
-### Manual Tracked Items
-
-A comma-separated or newline-separated list of item names or item IDs that should always be tracked.
-
 ### Show Inventory Items
 
 When enabled, items currently in your inventory are included in the missing-items display.
