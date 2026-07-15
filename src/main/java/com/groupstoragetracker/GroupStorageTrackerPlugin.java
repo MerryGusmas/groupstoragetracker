@@ -71,8 +71,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 @PluginDescriptor(
 	name = "Group Storage Tracker",
 	description = "Tracks group storage items that are currently in your bank, inventory, or equipment",
-	tags = {"bank", "gim", "group", "items", "storage"},
-	enabledByDefault = false
+	tags = {"bank", "gim", "group", "items", "storage"}
 )
 public class GroupStorageTrackerPlugin extends Plugin
 {
