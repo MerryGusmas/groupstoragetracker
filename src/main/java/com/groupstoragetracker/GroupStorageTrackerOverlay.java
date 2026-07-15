@@ -24,13 +24,12 @@
  */
 package com.groupstoragetracker;
 
-import java.awt.BasicStroke;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Point;
-import java.awt.Rectangle;
-import java.awt.Stroke;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,18 +43,18 @@ import net.runelite.client.game.ItemManager;
 import net.runelite.client.ui.overlay.OverlayPanel;
 import net.runelite.client.ui.overlay.OverlayPosition;
 import net.runelite.client.ui.overlay.components.ComponentOrientation;
-import net.runelite.client.ui.overlay.components.LayoutableRenderableEntity;
+import net.runelite.client.ui.overlay.components.ImageComponent;
+import net.runelite.client.util.ImageUtil;
 
 class GroupStorageTrackerOverlay extends OverlayPanel
 {
 	private static final Color BANK_COLOR = Color.RED;
 	private static final Color WORN_COLOR = Color.ORANGE;
 	private static final Color INVENTORY_COLOR = Color.GREEN;
-	private static final int OUTLINE_WIDTH = 2;
-
 	private final Client client;
 	private final GroupStorageTrackerPlugin plugin;
 	private final ItemManager itemManager;
+	private final Cache<GroupStorageTrackedItem, BufferedImage> imageCache;
 
 	@Inject
 	private GroupStorageTrackerOverlay(Client client, GroupStorageTrackerPlugin plugin, ItemManager itemManager)
@@ -69,6 +68,10 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 		this.client = client;
 		this.plugin = plugin;
 		this.itemManager = itemManager;
+		imageCache = CacheBuilder.newBuilder()
+			.concurrencyLevel(1)
+			.maximumSize(256)
+			.build();
 	}
 
 	@Override
@@ -90,7 +93,7 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 			BufferedImage image = getImage(item);
 			if (image != null)
 			{
-				panelComponent.getChildren().add(new OutlinedImageComponent(image, getOutlineColors(item)));
+				panelComponent.getChildren().add(new ImageComponent(image));
 			}
 		}
 
@@ -111,8 +114,22 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 
 	private BufferedImage getImage(GroupStorageTrackedItem item)
 	{
+		BufferedImage image = imageCache.getIfPresent(item);
+		if (image != null)
+		{
+			return image;
+		}
+
 		ItemComposition itemComposition = itemManager.getItemComposition(item.getItemId());
-		return itemManager.getImage(item.getItemId(), item.getOutsideQuantity(), itemComposition.isStackable());
+		image = itemManager.getImage(
+			item.getItemId(), item.getOutsideQuantity(), itemComposition.isStackable());
+		for (Color color : getOutlineColors(item))
+		{
+			image = ImageUtil.outlineImage(image, color, true);
+		}
+
+		imageCache.put(item, image);
+		return image;
 	}
 
 	private static List<Color> getOutlineColors(GroupStorageTrackedItem item)
@@ -136,63 +153,4 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 		return colors;
 	}
 
-	private static class OutlinedImageComponent implements LayoutableRenderableEntity
-	{
-		private final BufferedImage image;
-		private final List<Color> outlineColors;
-		private final Rectangle bounds = new Rectangle();
-		private Point preferredLocation = new Point();
-
-		private OutlinedImageComponent(BufferedImage image, List<Color> outlineColors)
-		{
-			this.image = image;
-			this.outlineColors = outlineColors;
-		}
-
-		@Override
-		public Dimension render(Graphics2D graphics)
-		{
-			graphics.drawImage(image, preferredLocation.x, preferredLocation.y, null);
-
-			Stroke oldStroke = graphics.getStroke();
-			Color oldColor = graphics.getColor();
-			graphics.setStroke(new BasicStroke(OUTLINE_WIDTH));
-
-			for (int i = 0; i < outlineColors.size(); i++)
-			{
-				int inset = 1 + i * OUTLINE_WIDTH;
-				graphics.setColor(outlineColors.get(i));
-				graphics.drawRect(
-					preferredLocation.x + inset,
-					preferredLocation.y + inset,
-					image.getWidth() - 1 - inset * 2,
-					image.getHeight() - 1 - inset * 2);
-			}
-
-			graphics.setStroke(oldStroke);
-			graphics.setColor(oldColor);
-
-			Dimension dimension = new Dimension(image.getWidth(), image.getHeight());
-			bounds.setLocation(preferredLocation);
-			bounds.setSize(dimension);
-			return dimension;
-		}
-
-		@Override
-		public void setPreferredLocation(Point preferredLocation)
-		{
-			this.preferredLocation = preferredLocation;
-		}
-
-		@Override
-		public void setPreferredSize(Dimension dimension)
-		{
-		}
-
-		@Override
-		public Rectangle getBounds()
-		{
-			return bounds;
-		}
-	}
 }

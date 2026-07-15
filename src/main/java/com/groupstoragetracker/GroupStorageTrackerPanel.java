@@ -58,10 +58,18 @@ class GroupStorageTrackerPanel extends PluginPanel
 	private final JPanel missingPanel = new JPanel(new DynamicGridLayout(0, 1, 0, 5));
 	private final JButton storedItemsHeader = new JButton();
 	private final JPanel storedItemsPanel = new JPanel(new DynamicGridLayout(0, 1, 0, 5));
+	private final JPanel storedItemsSection = new JPanel(new BorderLayout(0, 3));
+	private final JButton excludedItemsHeader = new JButton();
+	private final JPanel excludedItemsPanel = new JPanel(new DynamicGridLayout(0, 1, 0, 5));
+	private final JPanel excludedItemsSection = new JPanel(new BorderLayout(0, 3));
 	private IntConsumer excludeHandler = itemId ->
 	{
 	};
+	private IntConsumer includeHandler = itemId ->
+	{
+	};
 	private boolean storedItemsExpanded;
+	private boolean excludedItemsExpanded;
 
 	@Inject
 	private GroupStorageTrackerPanel(ItemManager itemManager)
@@ -89,16 +97,30 @@ class GroupStorageTrackerPanel extends PluginPanel
 		storedItemsHeader.addActionListener(e ->
 		{
 			storedItemsExpanded = !storedItemsExpanded;
-			storedItemsPanel.setVisible(storedItemsExpanded);
+			setSectionExpanded(storedItemsSection, storedItemsPanel, storedItemsExpanded);
 			updateStoredItemsHeader(storedItemsPanel.getComponentCount());
 			revalidate();
 			repaint();
 		});
-		add(storedItemsHeader);
-
 		storedItemsPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
-		storedItemsPanel.setVisible(false);
-		add(storedItemsPanel);
+		storedItemsSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		storedItemsSection.add(storedItemsHeader, BorderLayout.NORTH);
+
+		excludedItemsHeader.setFocusable(false);
+		excludedItemsHeader.setBorder(new EmptyBorder(6, 6, 6, 6));
+		excludedItemsHeader.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		excludedItemsHeader.setForeground(Color.WHITE);
+		excludedItemsHeader.addActionListener(e ->
+		{
+			excludedItemsExpanded = !excludedItemsExpanded;
+			setSectionExpanded(excludedItemsSection, excludedItemsPanel, excludedItemsExpanded);
+			updateExcludedItemsHeader(excludedItemsPanel.getComponentCount());
+			revalidate();
+			repaint();
+		});
+		excludedItemsPanel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		excludedItemsSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		excludedItemsSection.add(excludedItemsHeader, BorderLayout.NORTH);
 	}
 
 	void setExcludeHandler(IntConsumer excludeHandler)
@@ -106,16 +128,23 @@ class GroupStorageTrackerPanel extends PluginPanel
 		this.excludeHandler = excludeHandler;
 	}
 
-	void updateItems(List<GroupStorageTrackedItem> items, boolean hideStoredItems)
+	void setIncludeHandler(IntConsumer includeHandler)
 	{
-		List<GroupStorageTrackedItem> snapshot = new ArrayList<>(items);
-		SwingUtilities.invokeLater(() -> rebuild(snapshot, hideStoredItems));
+		this.includeHandler = includeHandler;
 	}
 
-	private void rebuild(List<GroupStorageTrackedItem> items, boolean hideStoredItems)
+	void updateItems(List<GroupStorageTrackedItem> items, List<GroupStorageTrackedItem> excludedItems)
+	{
+		List<GroupStorageTrackedItem> snapshot = new ArrayList<>(items);
+		List<GroupStorageTrackedItem> excludedSnapshot = new ArrayList<>(excludedItems);
+		SwingUtilities.invokeLater(() -> rebuild(snapshot, excludedSnapshot));
+	}
+
+	private void rebuild(List<GroupStorageTrackedItem> items, List<GroupStorageTrackedItem> excludedItems)
 	{
 		missingPanel.removeAll();
 		storedItemsPanel.removeAll();
+		excludedItemsPanel.removeAll();
 
 		List<GroupStorageTrackedItem> missingItems = items.stream()
 			.filter(GroupStorageTrackedItem::isMissingFromGroupStorage)
@@ -135,26 +164,48 @@ class GroupStorageTrackerPanel extends PluginPanel
 
 		if (missingItems.isEmpty())
 		{
-			String emptyText = hideStoredItems ? "No tracked items outside storage." : "No tracked items yet.";
-			missingPanel.add(createEmptyPanel(emptyText));
+			missingPanel.add(createEmptyPanel("No tracked items outside storage."));
 		}
 		else
 		{
 			for (GroupStorageTrackedItem item : missingItems)
 			{
-				missingPanel.add(new GroupStorageTrackerItemPanel(itemManager, item, excludeHandler, false));
+				missingPanel.add(new GroupStorageTrackerItemPanel(
+					itemManager, item, excludeHandler, ItemSection.MISSING));
 			}
 		}
 
 		for (GroupStorageTrackedItem item : storedItems)
 		{
-			storedItemsPanel.add(new GroupStorageTrackerItemPanel(itemManager, item, excludeHandler, true));
+			storedItemsPanel.add(new GroupStorageTrackerItemPanel(
+				itemManager, item, excludeHandler, ItemSection.STORED));
+		}
+
+		for (GroupStorageTrackedItem item : excludedItems)
+		{
+			excludedItemsPanel.add(new GroupStorageTrackerItemPanel(
+				itemManager, item, includeHandler, ItemSection.EXCLUDED));
 		}
 
 		boolean hasStoredItems = !storedItems.isEmpty();
-		storedItemsHeader.setVisible(hasStoredItems);
-		storedItemsPanel.setVisible(hasStoredItems && storedItemsExpanded);
+		setSectionExpanded(storedItemsSection, storedItemsPanel, hasStoredItems && storedItemsExpanded);
 		updateStoredItemsHeader(storedItems.size());
+
+		boolean hasExcludedItems = !excludedItems.isEmpty();
+		setSectionExpanded(excludedItemsSection, excludedItemsPanel, hasExcludedItems && excludedItemsExpanded);
+		updateExcludedItemsHeader(excludedItems.size());
+
+		remove(excludedItemsSection);
+		remove(storedItemsSection);
+		if (hasExcludedItems)
+		{
+			add(excludedItemsSection);
+		}
+
+		if (hasStoredItems)
+		{
+			add(storedItemsSection);
+		}
 
 		missingPanel.revalidate();
 		missingPanel.repaint();
@@ -162,11 +213,34 @@ class GroupStorageTrackerPanel extends PluginPanel
 		storedItemsHeader.repaint();
 		storedItemsPanel.revalidate();
 		storedItemsPanel.repaint();
+		excludedItemsHeader.revalidate();
+		excludedItemsHeader.repaint();
+		excludedItemsPanel.revalidate();
+		excludedItemsPanel.repaint();
+		revalidate();
+		repaint();
 	}
 
 	private void updateStoredItemsHeader(int itemCount)
 	{
 		storedItemsHeader.setText((storedItemsExpanded ? "- " : "+ ") + "In group storage (" + itemCount + ")");
+	}
+
+	private void updateExcludedItemsHeader(int itemCount)
+	{
+		excludedItemsHeader.setText((excludedItemsExpanded ? "- " : "+ ") + "Excluded Items (" + itemCount + ")");
+	}
+
+	private static void setSectionExpanded(JPanel section, JPanel items, boolean expanded)
+	{
+		section.remove(items);
+		if (expanded)
+		{
+			section.add(items, BorderLayout.CENTER);
+		}
+
+		section.revalidate();
+		section.repaint();
 	}
 
 	private static JPanel createEmptyPanel(String text)
@@ -182,13 +256,20 @@ class GroupStorageTrackerPanel extends PluginPanel
 		return panel;
 	}
 
+	private enum ItemSection
+	{
+		MISSING,
+		STORED,
+		EXCLUDED
+	}
+
 	private static class GroupStorageTrackerItemPanel extends JPanel
 	{
 		private GroupStorageTrackerItemPanel(
 			ItemManager itemManager,
 			GroupStorageTrackedItem item,
-			IntConsumer excludeHandler,
-			boolean storedSection)
+			IntConsumer actionHandler,
+			ItemSection section)
 		{
 			super(new GridBagLayout());
 			setBackground(ColorScheme.DARKER_GRAY_COLOR);
@@ -208,17 +289,20 @@ class GroupStorageTrackerPanel extends PluginPanel
 			JLabel value = new JLabel(QuantityFormatter.quantityToStackSize(item.getGePrice()) + " gp ea");
 			value.setForeground(Color.LIGHT_GRAY);
 
+			boolean storedSection = section == ItemSection.STORED;
 			JLabel location = new JLabel(storedSection ? getStoredLocationText(item) : getLocationText(item));
-			location.setForeground(storedSection ? ColorScheme.LIGHT_GRAY_COLOR : new Color(255, 188, 92));
+			location.setForeground(storedSection || section == ItemSection.EXCLUDED
+				? ColorScheme.LIGHT_GRAY_COLOR : new Color(255, 188, 92));
 
-			JButton excludeButton = new JButton("Exclude");
-			excludeButton.setFocusable(false);
-			excludeButton.addActionListener(e -> excludeHandler.accept(item.getItemId()));
+			String actionText = section == ItemSection.EXCLUDED ? "Re-Include" : "Exclude";
+			JButton actionButton = new JButton(actionText);
+			actionButton.setFocusable(false);
+			actionButton.addActionListener(e -> actionHandler.accept(item.getItemId()));
 
 			JPopupMenu popupMenu = new JPopupMenu();
-			JMenuItem exclude = new JMenuItem("Exclude");
-			exclude.addActionListener(e -> excludeHandler.accept(item.getItemId()));
-			popupMenu.add(exclude);
+			JMenuItem action = new JMenuItem(actionText);
+			action.addActionListener(e -> actionHandler.accept(item.getItemId()));
+			popupMenu.add(action);
 			setComponentPopupMenu(popupMenu);
 			icon.setComponentPopupMenu(popupMenu);
 			name.setComponentPopupMenu(popupMenu);
@@ -253,7 +337,7 @@ class GroupStorageTrackerPanel extends PluginPanel
 			c.weightx = 0;
 			c.fill = GridBagConstraints.NONE;
 			c.insets = new Insets(0, 6, 0, 0);
-			add(excludeButton, c);
+			add(actionButton, c);
 		}
 
 		private static String getLocationText(GroupStorageTrackedItem item)

@@ -24,9 +24,12 @@
  */
 package com.groupstoragetracker;
 
+import java.awt.Color;
+import net.runelite.client.config.Alpha;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.ConfigSection;
 import net.runelite.client.config.Range;
 import net.runelite.client.config.Units;
 
@@ -34,6 +37,13 @@ import net.runelite.client.config.Units;
 public interface GroupStorageTrackerConfig extends Config
 {
 	String GROUP = "groupstoragetracker";
+
+	@ConfigSection(
+		name = "Inventory tags",
+		description = "Configure tracked item highlights while group storage is open.",
+		position = 2
+	)
+	String inventoryTagsSection = "inventoryTags";
 
 	@Range(
 		min = 0
@@ -47,13 +57,13 @@ public interface GroupStorageTrackerConfig extends Config
 	)
 	default int minimumItemValue()
 	{
-		return 100_000;
+		return 50_000;
 	}
 
 	@ConfigItem(
 		keyName = "showInventory",
-		name = "Show inventory items",
-		description = "Show tracked group storage items currently in your inventory.",
+		name = "Display group storage bank view",
+		description = "Display tracked group storage items currently in your inventory in the bank view.",
 		position = 1
 	)
 	default boolean showInventory()
@@ -62,13 +72,52 @@ public interface GroupStorageTrackerConfig extends Config
 	}
 
 	@ConfigItem(
-		keyName = "hideStoredItems",
-		name = "Hide stored items",
-		description = "Only show tracked items currently found outside group storage.",
-		position = 2
+		keyName = "tagInventoryItems",
+		name = "Outline tracked items in inventory",
+		description = "Highlight tracked items in your inventory while group storage is open.",
+		position = 0,
+		section = inventoryTagsSection
 	)
-	default boolean hideStoredItems()
+	default boolean tagInventoryItems()
 	{
 		return true;
+	}
+
+	@Alpha
+	@ConfigItem(
+		keyName = "inventoryOutlineColor",
+		name = "Outline colour",
+		description = "Colour of the tracked inventory item outline.",
+		position = 1,
+		section = inventoryTagsSection
+	)
+	default Color inventoryOutlineColor()
+	{
+		return new Color(0xFF00FF3A, true);
+	}
+
+	@Alpha
+	@ConfigItem(
+		keyName = "inventoryFillColor",
+		name = "Fill colour",
+		description = "Colour of the tracked inventory item fill.",
+		position = 2,
+		section = inventoryTagsSection
+	)
+	default Color inventoryFillColor()
+	{
+		return new Color(0x3D00FF13, true);
+	}
+
+	@ConfigItem(
+		keyName = "inventoryOutlineWidth",
+		name = "Outline thickness",
+		description = "Thickness of the tracked inventory item outline, from 0.0 to 5.0 pixels.",
+		position = 3,
+		section = inventoryTagsSection
+	)
+	default double inventoryOutlineWidth()
+	{
+		return 0.5;
 	}
 }
