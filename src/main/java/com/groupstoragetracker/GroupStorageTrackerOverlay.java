@@ -30,13 +30,15 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Point;
+import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import javax.inject.Inject;
 import net.runelite.api.Client;
 import net.runelite.api.Constants;
-import net.runelite.api.ItemComposition;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.game.ItemManager;
@@ -44,10 +46,12 @@ import net.runelite.client.ui.overlay.OverlayPanel;
 import net.runelite.client.ui.overlay.OverlayPosition;
 import net.runelite.client.ui.overlay.components.ComponentOrientation;
 import net.runelite.client.ui.overlay.components.ImageComponent;
+import net.runelite.client.util.AsyncBufferedImage;
 import net.runelite.client.util.ImageUtil;
 
 class GroupStorageTrackerOverlay extends OverlayPanel
 {
+	private static final int MAX_STACK_SPRITE_QUANTITY = 0xFFFF;
 	private static final Color BANK_COLOR = Color.RED;
 	private static final Color WORN_COLOR = Color.ORANGE;
 	private static final Color INVENTORY_COLOR = Color.GREEN;
@@ -55,6 +59,8 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 	private final GroupStorageTrackerPlugin plugin;
 	private final ItemManager itemManager;
 	private final Cache<GroupStorageTrackedItem, BufferedImage> imageCache;
+	private final Set<GroupStorageTrackedItem> pendingImages = new HashSet<>();
+	private GroupStorageTrackedItem hoveredItem;
 
 	@Inject
 	private GroupStorageTrackerOverlay(Client client, GroupStorageTrackerPlugin plugin, ItemManager itemManager)
@@ -77,6 +83,11 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 	@Override
 	public Dimension render(Graphics2D graphics)
 	{
+		if (!client.isMenuOpen())
+		{
+			hoveredItem = null;
+		}
+
 		if (!isBankOpen() && !isGroupStorageOpen())
 		{
 			return null;
@@ -88,16 +99,49 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 			return null;
 		}
 
+		List<ImageComponent> imageComponents = new ArrayList<>();
+		List<GroupStorageTrackedItem> renderedItems = new ArrayList<>();
 		for (GroupStorageTrackedItem item : items)
 		{
 			BufferedImage image = getImage(item);
 			if (image != null)
 			{
-				panelComponent.getChildren().add(new ImageComponent(image));
+				ImageComponent imageComponent = new ImageComponent(image);
+				imageComponents.add(imageComponent);
+				renderedItems.add(item);
+				panelComponent.getChildren().add(imageComponent);
 			}
 		}
 
-		return super.render(graphics);
+		Dimension dimension = super.render(graphics);
+		if (!client.isMenuOpen())
+		{
+			updateHoveredItem(imageComponents, renderedItems);
+		}
+
+		return dimension;
+	}
+
+	GroupStorageTrackedItem getHoveredItem()
+	{
+		return hoveredItem;
+	}
+
+	private void updateHoveredItem(
+		List<ImageComponent> imageComponents,
+		List<GroupStorageTrackedItem> renderedItems)
+	{
+		net.runelite.api.Point mouse = client.getMouseCanvasPosition();
+		for (int i = 0; i < imageComponents.size(); i++)
+		{
+			Rectangle bounds = new Rectangle(imageComponents.get(i).getBounds());
+			bounds.translate(getBounds().x, getBounds().y);
+			if (bounds.contains(mouse.getX(), mouse.getY()))
+			{
+				hoveredItem = renderedItems.get(i);
+				return;
+			}
+		}
 	}
 
 	private boolean isBankOpen()
@@ -120,16 +164,25 @@ class GroupStorageTrackerOverlay extends OverlayPanel
 			return image;
 		}
 
-		ItemComposition itemComposition = itemManager.getItemComposition(item.getItemId());
-		image = itemManager.getImage(
-			item.getItemId(), item.getOutsideQuantity(), itemComposition.isStackable());
-		for (Color color : getOutlineColors(item))
+		if (pendingImages.add(item))
 		{
-			image = ImageUtil.outlineImage(image, color, true);
+			// Count-object thresholds are unsigned shorts, so this selects the fullest available sprite.
+			int spriteQuantity = item.isStackable() ? MAX_STACK_SPRITE_QUANTITY : 1;
+			AsyncBufferedImage baseImage = itemManager.getImage(item.getItemId(), spriteQuantity, false);
+			baseImage.onLoaded(() ->
+			{
+				BufferedImage loadedImage = baseImage;
+				for (Color color : getOutlineColors(item))
+				{
+					loadedImage = ImageUtil.outlineImage(loadedImage, color, true);
+				}
+
+				imageCache.put(item, loadedImage);
+				pendingImages.remove(item);
+			});
 		}
 
-		imageCache.put(item, image);
-		return image;
+		return null;
 	}
 
 	private static List<Color> getOutlineColors(GroupStorageTrackedItem item)

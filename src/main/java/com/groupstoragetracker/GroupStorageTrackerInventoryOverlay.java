@@ -31,12 +31,15 @@ import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.WidgetItem;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.ui.overlay.WidgetItemOverlay;
+import net.runelite.client.util.AsyncBufferedImage;
 import net.runelite.client.util.ImageUtil;
 
 class GroupStorageTrackerInventoryOverlay extends WidgetItemOverlay
@@ -48,8 +51,10 @@ class GroupStorageTrackerInventoryOverlay extends WidgetItemOverlay
 	private final GroupStorageTrackerConfig config;
 	private final Cache<Long, Image> fillCache;
 	private final Cache<Long, Image> outlineCache;
+	private final Set<Long> pendingImages = new HashSet<>();
 	private volatile int pressedItemId = -1;
 	private volatile long pressedUntilNanos;
+	private long cacheGeneration;
 
 	@Inject
 	private GroupStorageTrackerInventoryOverlay(
@@ -84,8 +89,16 @@ class GroupStorageTrackerInventoryOverlay extends WidgetItemOverlay
 		Rectangle bounds = widgetItem.getCanvasBounds();
 		boolean pressed = isPressed(itemId);
 		Image outline = getOutlineImage(itemId, widgetItem.getQuantity(), pressed);
-		graphics.drawImage(outline, bounds.x, bounds.y, null);
-		graphics.drawImage(getFillImage(itemId, widgetItem.getQuantity(), pressed), bounds.x, bounds.y, null);
+		if (outline != null)
+		{
+			graphics.drawImage(outline, bounds.x, bounds.y, null);
+		}
+
+		Image fill = getFillImage(itemId, widgetItem.getQuantity(), pressed);
+		if (fill != null)
+		{
+			graphics.drawImage(fill, bounds.x, bounds.y, null);
+		}
 	}
 
 	private Image getFillImage(int itemId, int quantity, boolean pressed)
@@ -94,10 +107,7 @@ class GroupStorageTrackerInventoryOverlay extends WidgetItemOverlay
 		Image image = fillCache.getIfPresent(key);
 		if (image == null)
 		{
-			image = ImageUtil.fillImage(
-				itemManager.getImage(itemId, quantity, false),
-				pressed ? config.inventoryFillColor().darker() : config.inventoryFillColor());
-			fillCache.put(key, image);
+			prepareImages(itemId, quantity, pressed, key);
 		}
 
 		return image;
@@ -109,31 +119,57 @@ class GroupStorageTrackerInventoryOverlay extends WidgetItemOverlay
 		Image image = outlineCache.getIfPresent(key);
 		if (image == null)
 		{
-			BufferedImage outlinedImage = itemManager.getImage(itemId, quantity, false);
-			Color outlineColor = pressed ? config.inventoryOutlineColor().darker() : config.inventoryOutlineColor();
-			double outlineWidth = Math.max(0.0, Math.min(5.0, config.inventoryOutlineWidth()));
-			int fullPixels = (int) outlineWidth;
-			for (int i = 0; i < fullPixels; i++)
-			{
-				outlinedImage = ImageUtil.outlineImage(outlinedImage, outlineColor, true);
-			}
-
-			double fractionalPixel = outlineWidth - fullPixels;
-			if (fractionalPixel > 0.0)
-			{
-				Color fractionalColor = new Color(
-					outlineColor.getRed(),
-					outlineColor.getGreen(),
-					outlineColor.getBlue(),
-					(int) Math.round(outlineColor.getAlpha() * fractionalPixel));
-				outlinedImage = ImageUtil.outlineImage(outlinedImage, fractionalColor, true);
-			}
-
-			image = outlinedImage;
-			outlineCache.put(key, image);
+			prepareImages(itemId, quantity, pressed, key);
 		}
 
 		return image;
+	}
+
+	private void prepareImages(int itemId, int quantity, boolean pressed, long key)
+	{
+		if (!pendingImages.add(key))
+		{
+			return;
+		}
+
+		long generation = cacheGeneration;
+		AsyncBufferedImage baseImage = itemManager.getImage(itemId, quantity, false);
+		baseImage.onLoaded(() ->
+		{
+			if (generation == cacheGeneration)
+			{
+				Color fillColor = pressed ? config.inventoryFillColor().darker() : config.inventoryFillColor();
+				fillCache.put(key, ImageUtil.fillImage(baseImage, fillColor));
+				outlineCache.put(key, createOutlineImage(baseImage, pressed));
+			}
+
+			pendingImages.remove(key);
+		});
+	}
+
+	private BufferedImage createOutlineImage(BufferedImage baseImage, boolean pressed)
+	{
+		BufferedImage outlinedImage = baseImage;
+		Color outlineColor = pressed ? config.inventoryOutlineColor().darker() : config.inventoryOutlineColor();
+		double outlineWidth = Math.max(0.0, Math.min(5.0, config.inventoryOutlineWidth()));
+		int fullPixels = (int) outlineWidth;
+		for (int i = 0; i < fullPixels; i++)
+		{
+			outlinedImage = ImageUtil.outlineImage(outlinedImage, outlineColor, true);
+		}
+
+		double fractionalPixel = outlineWidth - fullPixels;
+		if (fractionalPixel > 0.0)
+		{
+			Color fractionalColor = new Color(
+				outlineColor.getRed(),
+				outlineColor.getGreen(),
+				outlineColor.getBlue(),
+				(int) Math.round(outlineColor.getAlpha() * fractionalPixel));
+			outlinedImage = ImageUtil.outlineImage(outlinedImage, fractionalColor, true);
+		}
+
+		return outlinedImage;
 	}
 
 	private static long getCacheKey(int itemId, int quantity, boolean pressed)
@@ -172,6 +208,7 @@ class GroupStorageTrackerInventoryOverlay extends WidgetItemOverlay
 
 	void invalidateCache()
 	{
+		cacheGeneration++;
 		fillCache.invalidateAll();
 		outlineCache.invalidateAll();
 	}

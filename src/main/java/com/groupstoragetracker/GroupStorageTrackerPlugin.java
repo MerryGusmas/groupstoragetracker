@@ -27,6 +27,7 @@ package com.groupstoragetracker;
 import com.google.common.reflect.TypeToken;
 import com.google.gson.Gson;
 import com.google.inject.Provides;
+import java.awt.Color;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -39,20 +40,21 @@ import java.util.Set;
 import java.util.TreeSet;
 import javax.inject.Inject;
 import net.runelite.api.Client;
+import net.runelite.api.IconID;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.ItemContainer;
-import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ScriptID;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.api.events.PostMenuSort;
 import net.runelite.api.events.ScriptPostFired;
 import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
-import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.SpriteID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetUtil;
 import net.runelite.client.callback.ClientThread;
@@ -62,13 +64,15 @@ import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.events.RuneScapeProfileChanged;
 import net.runelite.client.game.ItemMapping;
 import net.runelite.client.game.ItemManager;
+import net.runelite.client.game.ItemVariationMapping;
+import net.runelite.client.game.SpriteManager;
 import net.runelite.client.input.MouseManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.ui.overlay.OverlayManager;
-import net.runelite.client.util.AsyncBufferedImage;
+import net.runelite.client.util.ColorUtil;
 
 @PluginDescriptor(
 	name = "Group Storage Tracker",
@@ -78,7 +82,11 @@ import net.runelite.client.util.AsyncBufferedImage;
 public class GroupStorageTrackerPlugin extends Plugin
 {
 	private static final String INCLUDE_OPTION = "Include in group storage tracker";
+	private static final String EXCLUDE_OPTION = "Exclude from group storage tracker";
+	private static final Color MENU_OPTION_COLOR = new Color(0xFFAD00);
+	private static final String MINIMUM_ITEM_VALUE_KEY = "minimumItemValue";
 	private static final String TRACKED_ITEMS_KEY = "trackedItems";
+	private static final String MANUALLY_INCLUDED_ITEMS_KEY = "manuallyIncludedItems";
 	private static final String EXCLUDED_ITEMS_KEY = "excludedItems";
 	private static final String GROUP_STORAGE_ITEMS_KEY = "groupStorageItems";
 	private static final Type TRACKED_ITEMS_TYPE = new TypeToken<Set<Integer>>()
@@ -125,15 +133,20 @@ public class GroupStorageTrackerPlugin extends Plugin
 	private ItemManager itemManager;
 
 	@Inject
+	private SpriteManager spriteManager;
+
+	@Inject
 	private Gson gson;
 
 	private final Set<Integer> trackedItems = new TreeSet<>();
+	private final Set<Integer> manuallyIncludedItems = new TreeSet<>();
 	private final Set<Integer> excludedItems = new TreeSet<>();
 	private Map<Integer, Integer> lastKnownGroupStorageItems = Collections.emptyMap();
 	private volatile List<GroupStorageTrackedItem> displayItems = Collections.emptyList();
 	private boolean suppressGroupStorageDiscoveryUntilClosed;
 
 	private NavigationButton navButton;
+	private volatile Object navigationIconRequest;
 
 	@Provides
 	GroupStorageTrackerConfig getConfig(ConfigManager configManager)
@@ -145,24 +158,26 @@ public class GroupStorageTrackerPlugin extends Plugin
 	protected void startUp()
 	{
 		loadTrackedItems();
+		loadManuallyIncludedItems();
 		loadExcludedItems();
+		removeLegacyManuallyIncludedExclusions();
 		loadGroupStorageItems();
 		panel.setExcludeHandler(this::excludeItem);
 		panel.setIncludeHandler(this::includeExcludedItem);
 
-		AsyncBufferedImage icon = itemManager.getImage(ItemID.GROUP_IRONMAN_HELM);
-		navButton = NavigationButton.builder()
-			.tooltip("Group Storage Tracker")
-			.icon(icon)
-			.priority(8)
-			.panel(panel)
-			.build();
-
-		NavigationButton button = navButton;
-		icon.onLoaded(() ->
+		Object iconRequest = new Object();
+		navigationIconRequest = iconRequest;
+		spriteManager.getSpriteAsync(SpriteID.MOD_ICONS, IconID.GROUP_IRONMAN.getIndex(), icon ->
 		{
-			if (navButton == button)
+			if (navigationIconRequest == iconRequest)
 			{
+				NavigationButton button = NavigationButton.builder()
+					.tooltip("Group Storage Tracker")
+					.icon(icon)
+					.priority(8)
+					.panel(panel)
+					.build();
+				navButton = button;
 				clientToolbar.addNavigation(button);
 			}
 		});
@@ -176,39 +191,49 @@ public class GroupStorageTrackerPlugin extends Plugin
 	public void resetConfiguration()
 	{
 		trackedItems.clear();
+		manuallyIncludedItems.clear();
 		excludedItems.clear();
 		lastKnownGroupStorageItems = Collections.emptyMap();
 		displayItems = Collections.emptyList();
 		suppressGroupStorageDiscoveryUntilClosed = isGroupStorageOpen();
 
 		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, TRACKED_ITEMS_KEY);
+		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, MANUALLY_INCLUDED_ITEMS_KEY);
 		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, EXCLUDED_ITEMS_KEY);
 		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, GROUP_STORAGE_ITEMS_KEY);
-		panel.updateItems(Collections.emptyList(), Collections.emptyList());
+		panel.updateItems(Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
 	}
 
 	@Override
 	protected void shutDown()
 	{
-		clientToolbar.removeNavigation(navButton);
+		navigationIconRequest = null;
+		if (navButton != null)
+		{
+			clientToolbar.removeNavigation(navButton);
+		}
+
 		mouseManager.unregisterMouseListener(mouseListener);
 		overlayManager.remove(overlay);
 		overlayManager.remove(inventoryOverlay);
 		inventoryOverlay.clearPressedItem();
 		navButton = null;
 		trackedItems.clear();
+		manuallyIncludedItems.clear();
 		excludedItems.clear();
 		lastKnownGroupStorageItems = Collections.emptyMap();
 		displayItems = Collections.emptyList();
 		suppressGroupStorageDiscoveryUntilClosed = false;
-		panel.updateItems(Collections.emptyList(), Collections.emptyList());
+		panel.updateItems(Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
 	}
 
 	@Subscribe
 	public void onRuneScapeProfileChanged(RuneScapeProfileChanged event)
 	{
 		loadTrackedItems();
+		loadManuallyIncludedItems();
 		loadExcludedItems();
+		removeLegacyManuallyIncludedExclusions();
 		loadGroupStorageItems();
 		clientThread.invokeLater(this::recalibrate);
 	}
@@ -222,7 +247,15 @@ public class GroupStorageTrackerPlugin extends Plugin
 		}
 
 		inventoryOverlay.invalidateCache();
-		clientThread.invokeLater(this::recalibrate);
+		clientThread.invokeLater(() ->
+		{
+			if (MINIMUM_ITEM_VALUE_KEY.equals(event.getKey()))
+			{
+				removeItemsBelowMinimumValue();
+			}
+
+			recalibrate();
+		});
 	}
 
 	@Subscribe
@@ -287,9 +320,7 @@ public class GroupStorageTrackerPlugin extends Plugin
 	@Subscribe
 	public void onMenuEntryAdded(MenuEntryAdded event)
 	{
-		if (!client.isKeyPressed(KeyCode.KC_SHIFT) ||
-			event.getActionParam1() != InterfaceID.Bankmain.ITEMS ||
-			!event.getOption().equals("Examine"))
+		if (!event.getOption().equals("Examine") || !isTrackingMenuWidget(event.getActionParam1()))
 		{
 			return;
 		}
@@ -300,23 +331,65 @@ public class GroupStorageTrackerPlugin extends Plugin
 			return;
 		}
 
-		client.createMenuEntry(-1)
+		Set<Integer> activeTrackedItems = getActiveTrackedItems(itemId);
+		boolean tracked = !activeTrackedItems.isEmpty();
+		MenuEntry menuEntry = client.createMenuEntry(-1)
 			.setParam0(event.getActionParam0())
 			.setParam1(event.getActionParam1())
 			.setTarget(event.getTarget())
-			.setOption(INCLUDE_OPTION)
+			.setOption(ColorUtil.prependColorTag(tracked ? EXCLUDE_OPTION : INCLUDE_OPTION, MENU_OPTION_COLOR))
 			.setType(MenuAction.RUNELITE)
 			.setIdentifier(event.getIdentifier())
-			.setItemId(itemId)
-			.onClick(this::includeItem);
+			.setItemId(itemId);
+		menuEntry.setDeprioritized(true);
+		if (tracked)
+		{
+			menuEntry.onClick(entry -> excludeItems(activeTrackedItems));
+		}
+		else
+		{
+			menuEntry.onClick(this::includeItem);
+		}
+	}
+
+	@Subscribe
+	public void onPostMenuSort(PostMenuSort event)
+	{
+		if (client.isMenuOpen())
+		{
+			return;
+		}
+
+		GroupStorageTrackedItem hoveredItem = overlay.getHoveredItem();
+		if (hoveredItem == null || !isTrackedInventoryItem(hoveredItem.getItemId()))
+		{
+			return;
+		}
+
+		MenuEntry menuEntry = client.createMenuEntry(-1)
+			.setOption(ColorUtil.prependColorTag(EXCLUDE_OPTION, MENU_OPTION_COLOR))
+			.setTarget(hoveredItem.getName())
+			.setType(MenuAction.RUNELITE)
+			.setItemId(hoveredItem.getItemId())
+			.onClick(entry -> excludeItem(hoveredItem.getItemId()));
+		menuEntry.setDeprioritized(true);
+	}
+
+	private static boolean isTrackingMenuWidget(int widgetId)
+	{
+		return widgetId == InterfaceID.Bankmain.ITEMS ||
+			widgetId == InterfaceID.Bankside.ITEMS ||
+			widgetId == InterfaceID.Inventory.ITEMS ||
+			widgetId == InterfaceID.SharedBank.ITEMS ||
+			widgetId == InterfaceID.SharedBankSide.ITEMS;
 	}
 
 	private void recalibrate()
 	{
 		Map<Integer, Integer> groupStorageItems = getGroupStorageItems();
-		Map<Integer, Integer> bankItems = getItemQuantities(InventoryID.BANK);
+		Map<Integer, Integer> bankItems = getOutsideItemQuantities(InventoryID.BANK);
 		Map<Integer, Integer> inventoryItems = getInventoryItems();
-		Map<Integer, Integer> wornItems = getItemQuantities(InventoryID.WORN);
+		Map<Integer, Integer> wornItems = getOutsideItemQuantities(InventoryID.WORN);
 		boolean groupStorageOpen = isGroupStorageOpen();
 
 		if (!groupStorageOpen)
@@ -332,8 +405,22 @@ public class GroupStorageTrackerPlugin extends Plugin
 		List<GroupStorageTrackedItem> items = buildDisplayItems(groupStorageItems, bankItems, inventoryItems, wornItems);
 		List<GroupStorageTrackedItem> excluded = buildExcludedItems(
 			groupStorageItems, bankItems, inventoryItems, wornItems);
+		List<GroupStorageTrackedItem> automaticallyTracked = new ArrayList<>();
+		List<GroupStorageTrackedItem> manuallyIncluded = new ArrayList<>();
+		for (GroupStorageTrackedItem item : items)
+		{
+			if (manuallyIncludedItems.contains(item.getItemId()))
+			{
+				manuallyIncluded.add(item);
+			}
+			else
+			{
+				automaticallyTracked.add(item);
+			}
+		}
+
 		displayItems = Collections.unmodifiableList(new ArrayList<>(items));
-		panel.updateItems(items, excluded);
+		panel.updateItems(automaticallyTracked, manuallyIncluded, excluded);
 	}
 
 	List<GroupStorageTrackedItem> getMissingItems()
@@ -352,8 +439,7 @@ public class GroupStorageTrackerPlugin extends Plugin
 
 	boolean isTrackedInventoryItem(int itemId)
 	{
-		int canonicalItemId = itemManager.canonicalize(itemId);
-		return trackedItems.contains(canonicalItemId) && !excludedItems.contains(canonicalItemId);
+		return !getActiveTrackedItems(itemId).isEmpty();
 	}
 
 	private List<GroupStorageTrackedItem> buildDisplayItems(
@@ -364,10 +450,6 @@ public class GroupStorageTrackerPlugin extends Plugin
 	{
 		List<GroupStorageTrackedItem> items = new ArrayList<>();
 		Set<Integer> combinedItems = new TreeSet<>(trackedItems);
-		Set<Integer> outsideItemIds = new HashSet<>();
-		outsideItemIds.addAll(bankItems.keySet());
-		outsideItemIds.addAll(inventoryItems.keySet());
-		outsideItemIds.addAll(wornItems.keySet());
 		boolean groupStorageOpen = isGroupStorageOpen();
 
 		for (int itemId : combinedItems)
@@ -387,15 +469,11 @@ public class GroupStorageTrackerPlugin extends Plugin
 				continue;
 			}
 
-			if (!groupStorageOpen && outsideQuantity <= 0 && hasMappedProductOutside(itemId, outsideItemIds))
-			{
-				continue;
-			}
-
 			items.add(new GroupStorageTrackedItem(
 				itemId,
 				getItemName(itemId),
 				itemManager.getItemPrice(itemId),
+				itemManager.getItemComposition(itemId).isStackable(),
 				bankQuantity,
 				inventoryQuantity,
 				wornQuantity,
@@ -430,6 +508,7 @@ public class GroupStorageTrackerPlugin extends Plugin
 				itemId,
 				getItemName(itemId),
 				itemManager.getItemPrice(itemId),
+				itemManager.getItemComposition(itemId).isStackable(),
 				bankQuantity,
 				inventoryQuantity,
 				wornQuantity,
@@ -481,10 +560,33 @@ public class GroupStorageTrackerPlugin extends Plugin
 		return changed;
 	}
 
+	private void removeItemsBelowMinimumValue()
+	{
+		int minimumItemValue = config.minimumItemValue();
+		Set<Integer> removedItems = new HashSet<>();
+		for (int itemId : trackedItems)
+		{
+			if (!manuallyIncludedItems.contains(itemId) && itemManager.getItemPrice(itemId) < minimumItemValue)
+			{
+				removedItems.add(itemId);
+			}
+		}
+
+		if (removedItems.isEmpty())
+		{
+			return;
+		}
+
+		trackedItems.removeAll(removedItems);
+		excludedItems.removeAll(removedItems);
+		saveTrackedItems();
+		saveExcludedItems();
+	}
+
 	private Map<Integer, Integer> getInventoryItems()
 	{
 		int inventoryId = isGroupStorageOpen() ? InventoryID.INV_PLAYER_TEMP : InventoryID.INV;
-		return getItemQuantities(inventoryId);
+		return getOutsideItemQuantities(inventoryId);
 	}
 
 	private Map<Integer, Integer> getGroupStorageItems()
@@ -499,7 +601,7 @@ public class GroupStorageTrackerPlugin extends Plugin
 			return;
 		}
 
-		Map<Integer, Integer> currentGroupStorageItems = getItemQuantities(itemContainer);
+		Map<Integer, Integer> currentGroupStorageItems = getItemQuantities(itemContainer, false);
 		if (currentGroupStorageItems.isEmpty() && !allowEmpty)
 		{
 			return;
@@ -518,34 +620,12 @@ public class GroupStorageTrackerPlugin extends Plugin
 		return groupStorageItems != null && !groupStorageItems.isHidden();
 	}
 
-	private boolean hasMappedProductOutside(int itemId, Set<Integer> outsideItemIds)
+	private Map<Integer, Integer> getOutsideItemQuantities(int inventoryId)
 	{
-		for (int outsideItemId : outsideItemIds)
-		{
-			Collection<ItemMapping> mappedItems = ItemMapping.map(outsideItemId);
-			if (mappedItems == null)
-			{
-				continue;
-			}
-
-			for (ItemMapping mappedItem : mappedItems)
-			{
-				if (mappedItem.getTradeableItem() == itemId)
-				{
-					return true;
-				}
-			}
-		}
-
-		return false;
+		return getItemQuantities(client.getItemContainer(inventoryId), true);
 	}
 
-	private Map<Integer, Integer> getItemQuantities(int inventoryId)
-	{
-		return getItemQuantities(client.getItemContainer(inventoryId));
-	}
-
-	private Map<Integer, Integer> getItemQuantities(ItemContainer itemContainer)
+	private Map<Integer, Integer> getItemQuantities(ItemContainer itemContainer, boolean includeMappedItems)
 	{
 		if (itemContainer == null)
 		{
@@ -568,8 +648,20 @@ public class GroupStorageTrackerPlugin extends Plugin
 				continue;
 			}
 
-			itemId = itemManager.canonicalize(itemId);
-			itemQuantities.merge(itemId, quantity, Integer::sum);
+			int canonicalItemId = itemManager.canonicalize(itemId);
+			int normalizedItemId = ItemVariationMapping.map(canonicalItemId);
+			itemQuantities.merge(normalizedItemId, quantity, Integer::sum);
+
+			if (includeMappedItems)
+			{
+				for (int mappedItemId : getMappedTrackedItems(canonicalItemId))
+				{
+					if (mappedItemId != normalizedItemId)
+					{
+						itemQuantities.merge(mappedItemId, quantity, Integer::sum);
+					}
+				}
+			}
 		}
 
 		return itemQuantities;
@@ -577,13 +669,19 @@ public class GroupStorageTrackerPlugin extends Plugin
 
 	private void includeItem(MenuEntry entry)
 	{
-		int itemId = itemManager.canonicalize(entry.getItemId());
+		int itemId = normalizeItemId(entry.getItemId());
 		boolean trackedChanged = trackedItems.add(itemId);
+		boolean manuallyIncludedChanged = manuallyIncludedItems.add(itemId);
 		boolean excludedChanged = excludedItems.remove(itemId);
 
 		if (trackedChanged)
 		{
 			saveTrackedItems();
+		}
+
+		if (manuallyIncludedChanged)
+		{
+			saveManuallyIncludedItems();
 		}
 
 		if (excludedChanged)
@@ -596,10 +694,43 @@ public class GroupStorageTrackerPlugin extends Plugin
 
 	private void excludeItem(int itemId)
 	{
-		int canonicalItemId = itemId;
+		excludeItems(Collections.singleton(itemId));
+	}
+
+	private void excludeItems(Collection<Integer> itemIds)
+	{
+		Set<Integer> itemIdSnapshot = new HashSet<>(itemIds);
 		clientThread.invokeLater(() ->
 		{
-			if (excludedItems.add(canonicalItemId))
+			boolean trackedChanged = false;
+			boolean manuallyIncludedChanged = false;
+			boolean excludedChanged = false;
+			for (int itemId : itemIdSnapshot)
+			{
+				int normalizedItemId = normalizeItemId(itemId);
+				if (manuallyIncludedItems.remove(normalizedItemId))
+				{
+					manuallyIncludedChanged = true;
+					trackedChanged |= trackedItems.remove(normalizedItemId);
+					excludedChanged |= excludedItems.remove(normalizedItemId);
+				}
+				else if (trackedItems.contains(normalizedItemId))
+				{
+					excludedChanged |= excludedItems.add(normalizedItemId);
+				}
+			}
+
+			if (trackedChanged)
+			{
+				saveTrackedItems();
+			}
+
+			if (manuallyIncludedChanged)
+			{
+				saveManuallyIncludedItems();
+			}
+
+			if (excludedChanged)
 			{
 				saveExcludedItems();
 			}
@@ -608,12 +739,30 @@ public class GroupStorageTrackerPlugin extends Plugin
 		});
 	}
 
+	private void removeLegacyManuallyIncludedExclusions()
+	{
+		Set<Integer> legacyExclusions = new HashSet<>(manuallyIncludedItems);
+		legacyExclusions.retainAll(excludedItems);
+		if (legacyExclusions.isEmpty())
+		{
+			return;
+		}
+
+		manuallyIncludedItems.removeAll(legacyExclusions);
+		trackedItems.removeAll(legacyExclusions);
+		excludedItems.removeAll(legacyExclusions);
+		saveManuallyIncludedItems();
+		saveTrackedItems();
+		saveExcludedItems();
+	}
+
 	private void includeExcludedItem(int itemId)
 	{
 		clientThread.invokeLater(() ->
 		{
-			boolean trackedChanged = trackedItems.add(itemId);
-			boolean excludedChanged = excludedItems.remove(itemId);
+			int normalizedItemId = ItemVariationMapping.map(itemId);
+			boolean trackedChanged = trackedItems.add(normalizedItemId);
+			boolean excludedChanged = excludedItems.remove(normalizedItemId);
 			if (trackedChanged)
 			{
 				saveTrackedItems();
@@ -626,6 +775,63 @@ public class GroupStorageTrackerPlugin extends Plugin
 
 			recalibrate();
 		});
+	}
+
+	private int normalizeItemId(int itemId)
+	{
+		return ItemVariationMapping.map(itemManager.canonicalize(itemId));
+	}
+
+	private Set<Integer> getActiveTrackedItems(int itemId)
+	{
+		int normalizedItemId = normalizeItemId(itemId);
+		if (trackedItems.contains(normalizedItemId))
+		{
+			return excludedItems.contains(normalizedItemId) ?
+				Collections.emptySet() : Collections.singleton(normalizedItemId);
+		}
+
+		Set<Integer> activeTrackedItems = getMappedTrackedItems(itemManager.canonicalize(itemId));
+		activeTrackedItems.removeAll(excludedItems);
+		return activeTrackedItems;
+	}
+
+	private Set<Integer> getMappedTrackedItems(int itemId)
+	{
+		Set<Integer> mappedTrackedItems = new HashSet<>();
+		addMappedTrackedItems(itemId, mappedTrackedItems);
+
+		int variationItemId = ItemVariationMapping.map(itemId);
+		if (variationItemId != itemId)
+		{
+			addMappedTrackedItems(variationItemId, mappedTrackedItems);
+		}
+
+		return mappedTrackedItems;
+	}
+
+	private void addMappedTrackedItems(int itemId, Set<Integer> mappedTrackedItems)
+	{
+		Collection<ItemMapping> mappings = ItemMapping.map(itemId);
+		if (mappings == null)
+		{
+			return;
+		}
+
+		for (ItemMapping mapping : mappings)
+		{
+			// Quantity-changing mappings describe exchange value, not interchangeable item forms.
+			if (mapping.getQuantity() != 1L)
+			{
+				continue;
+			}
+
+			int mappedItemId = ItemVariationMapping.map(mapping.getTradeableItem());
+			if (trackedItems.contains(mappedItemId))
+			{
+				mappedTrackedItems.add(mappedItemId);
+			}
+		}
 	}
 
 	private String getItemName(int itemId)
@@ -648,7 +854,15 @@ public class GroupStorageTrackerPlugin extends Plugin
 		Set<Integer> storedItems = gson.fromJson(json, TRACKED_ITEMS_TYPE);
 		if (storedItems != null)
 		{
-			trackedItems.addAll(storedItems);
+			for (int itemId : storedItems)
+			{
+				trackedItems.add(ItemVariationMapping.map(itemId));
+			}
+
+			if (!trackedItems.equals(storedItems))
+			{
+				saveTrackedItems();
+			}
 		}
 	}
 
@@ -665,7 +879,47 @@ public class GroupStorageTrackerPlugin extends Plugin
 		Set<Integer> storedItems = gson.fromJson(json, TRACKED_ITEMS_TYPE);
 		if (storedItems != null)
 		{
-			excludedItems.addAll(storedItems);
+			for (int itemId : storedItems)
+			{
+				excludedItems.add(ItemVariationMapping.map(itemId));
+			}
+
+			if (!excludedItems.equals(storedItems))
+			{
+				saveExcludedItems();
+			}
+		}
+	}
+
+	private void loadManuallyIncludedItems()
+	{
+		manuallyIncludedItems.clear();
+
+		String json = configManager.getRSProfileConfiguration(
+			GroupStorageTrackerConfig.GROUP, MANUALLY_INCLUDED_ITEMS_KEY);
+		if (json == null || json.isBlank())
+		{
+			return;
+		}
+
+		Set<Integer> storedItems = gson.fromJson(json, TRACKED_ITEMS_TYPE);
+		if (storedItems != null)
+		{
+			for (int itemId : storedItems)
+			{
+				manuallyIncludedItems.add(ItemVariationMapping.map(itemId));
+			}
+
+			boolean trackedChanged = trackedItems.addAll(manuallyIncludedItems);
+			if (!manuallyIncludedItems.equals(storedItems))
+			{
+				saveManuallyIncludedItems();
+			}
+
+			if (trackedChanged)
+			{
+				saveTrackedItems();
+			}
 		}
 	}
 
@@ -682,7 +936,18 @@ public class GroupStorageTrackerPlugin extends Plugin
 		Map<Integer, Integer> storedItems = gson.fromJson(json, ITEM_QUANTITIES_TYPE);
 		if (storedItems != null)
 		{
-			lastKnownGroupStorageItems = new HashMap<>(storedItems);
+			Map<Integer, Integer> normalizedItems = new HashMap<>();
+			for (Map.Entry<Integer, Integer> entry : storedItems.entrySet())
+			{
+				int itemId = ItemVariationMapping.map(entry.getKey());
+				normalizedItems.merge(itemId, entry.getValue(), Integer::sum);
+			}
+
+			lastKnownGroupStorageItems = normalizedItems;
+			if (!normalizedItems.equals(storedItems))
+			{
+				saveGroupStorageItems();
+			}
 		}
 	}
 
@@ -700,6 +965,14 @@ public class GroupStorageTrackerPlugin extends Plugin
 			GroupStorageTrackerConfig.GROUP,
 			EXCLUDED_ITEMS_KEY,
 			gson.toJson(excludedItems, TRACKED_ITEMS_TYPE));
+	}
+
+	private void saveManuallyIncludedItems()
+	{
+		configManager.setRSProfileConfiguration(
+			GroupStorageTrackerConfig.GROUP,
+			MANUALLY_INCLUDED_ITEMS_KEY,
+			gson.toJson(manuallyIncludedItems, TRACKED_ITEMS_TYPE));
 	}
 
 	private void saveGroupStorageItems()

@@ -32,6 +32,7 @@ class GroupStorageTrackedItem
 	int itemId;
 	String name;
 	int gePrice;
+	boolean stackable;
 	int bankQuantity;
 	int inventoryQuantity;
 	int wornQuantity;
