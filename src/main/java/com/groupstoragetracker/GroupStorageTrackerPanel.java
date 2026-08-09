@@ -55,6 +55,7 @@ class GroupStorageTrackerPanel extends PluginPanel
 {
 	private static final int MAX_STACK_SPRITE_QUANTITY = 0xFFFF;
 	private final ItemManager itemManager;
+	private final JButton bankTagButton = new JButton("Create/Update Bank Tag");
 	private final JLabel summary = new JLabel("No tracked items outside storage");
 	private final JPanel missingPanel = new JPanel(new DynamicGridLayout(0, 1, 0, 5));
 	private final JButton manuallyIncludedItemsHeader = new JButton();
@@ -72,6 +73,9 @@ class GroupStorageTrackerPanel extends PluginPanel
 	private IntConsumer includeHandler = itemId ->
 	{
 	};
+	private Runnable bankTagSyncHandler = () ->
+	{
+	};
 	private boolean manuallyIncludedItemsExpanded;
 	private boolean storedItemsExpanded;
 	private boolean excludedItemsExpanded;
@@ -87,6 +91,17 @@ class GroupStorageTrackerPanel extends PluginPanel
 		title.setForeground(Color.WHITE);
 		title.setFont(title.getFont().deriveFont(Font.BOLD, 16f));
 		add(title);
+
+		bankTagButton.setFocusable(false);
+		bankTagButton.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		bankTagButton.setForeground(Color.WHITE);
+		bankTagButton.setBorder(new EmptyBorder(6, 6, 6, 6));
+		bankTagButton.setToolTipText(
+			"<html>Creates or updates the 'Group Storage Tracker' Bank Tag.<br>" +
+				"It stays synchronized as tracked items change and when Group Storage opens.<br>" +
+				"Does nothing when the Bank Tags plugin is unavailable or disabled.</html>");
+		bankTagButton.addActionListener(e -> bankTagSyncHandler.run());
+		add(bankTagButton);
 
 		summary.setForeground(Color.LIGHT_GRAY);
 		summary.setBorder(new EmptyBorder(2, 0, 8, 0));
@@ -153,6 +168,11 @@ class GroupStorageTrackerPanel extends PluginPanel
 	void setIncludeHandler(IntConsumer includeHandler)
 	{
 		this.includeHandler = includeHandler;
+	}
+
+	void setBankTagSyncHandler(Runnable bankTagSyncHandler)
+	{
+		this.bankTagSyncHandler = bankTagSyncHandler;
 	}
 
 	void updateItems(

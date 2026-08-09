@@ -51,9 +51,11 @@ import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.PostMenuSort;
 import net.runelite.api.events.ScriptPostFired;
+import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.SpriteID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetUtil;
@@ -69,20 +71,31 @@ import net.runelite.client.game.SpriteManager;
 import net.runelite.client.input.MouseManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.PluginManager;
+import net.runelite.client.plugins.banktags.BankTagsService;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ColorUtil;
+import net.runelite.client.util.Text;
 
 @PluginDescriptor(
-	name = "Group Storage Tracker",
+	name = "Group Storage Tracker (Dev)",
+	configName = "groupStorageTrackerDev",
 	description = "Tracks group storage items that are currently in your bank, inventory, or equipment",
-	tags = {"bank", "gim", "group", "items", "storage"}
+	tags = {"bank", "gim", "group", "items", "storage"},
+	conflicts = {"Group Storage Tracker"}
 )
 public class GroupStorageTrackerPlugin extends Plugin
 {
 	private static final String INCLUDE_OPTION = "Include in group storage tracker";
 	private static final String EXCLUDE_OPTION = "Exclude from group storage tracker";
+	private static final String BANK_TAG_NAME = "Group Storage Tracker";
+	private static final String BANK_TAGS_PLUGIN_NAME = "Bank Tags";
+	private static final String BANK_TAGS_CONFIG_GROUP = "banktags";
+	private static final String BANK_TAGS_TABS_KEY = "tagtabs";
+	private static final String BANK_TAGS_ICON_KEY_PREFIX = "icon_";
+	private static final String BANK_TAGS_ITEM_KEY_PREFIX = "item_";
 	private static final Color MENU_OPTION_COLOR = new Color(0xFFAD00);
 	private static final String MINIMUM_ITEM_VALUE_KEY = "minimumItemValue";
 	private static final String TRACKED_ITEMS_KEY = "trackedItems";
@@ -138,12 +151,16 @@ public class GroupStorageTrackerPlugin extends Plugin
 	@Inject
 	private Gson gson;
 
+	@Inject
+	private PluginManager pluginManager;
+
 	private final Set<Integer> trackedItems = new TreeSet<>();
 	private final Set<Integer> manuallyIncludedItems = new TreeSet<>();
 	private final Set<Integer> excludedItems = new TreeSet<>();
 	private Map<Integer, Integer> lastKnownGroupStorageItems = Collections.emptyMap();
 	private volatile List<GroupStorageTrackedItem> displayItems = Collections.emptyList();
 	private boolean suppressGroupStorageDiscoveryUntilClosed;
+	private boolean bankTagUpdatedForCurrentGroupStorageOpen;
 
 	private NavigationButton navButton;
 	private volatile Object navigationIconRequest;
@@ -164,6 +181,7 @@ public class GroupStorageTrackerPlugin extends Plugin
 		loadGroupStorageItems();
 		panel.setExcludeHandler(this::excludeItem);
 		panel.setIncludeHandler(this::includeExcludedItem);
+		panel.setBankTagSyncHandler(this::createOrUpdateBankTag);
 
 		Object iconRequest = new Object();
 		navigationIconRequest = iconRequest;
@@ -195,13 +213,15 @@ public class GroupStorageTrackerPlugin extends Plugin
 		excludedItems.clear();
 		lastKnownGroupStorageItems = Collections.emptyMap();
 		displayItems = Collections.emptyList();
-		suppressGroupStorageDiscoveryUntilClosed = isGroupStorageOpen();
+		bankTagUpdatedForCurrentGroupStorageOpen = isGroupStorageOpen();
+		suppressGroupStorageDiscoveryUntilClosed = bankTagUpdatedForCurrentGroupStorageOpen;
 
 		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, TRACKED_ITEMS_KEY);
 		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, MANUALLY_INCLUDED_ITEMS_KEY);
 		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, EXCLUDED_ITEMS_KEY);
 		configManager.unsetRSProfileConfiguration(GroupStorageTrackerConfig.GROUP, GROUP_STORAGE_ITEMS_KEY);
 		panel.updateItems(Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
+		clientThread.invokeLater(() -> synchronizeBankTag(false));
 	}
 
 	@Override
@@ -224,6 +244,7 @@ public class GroupStorageTrackerPlugin extends Plugin
 		lastKnownGroupStorageItems = Collections.emptyMap();
 		displayItems = Collections.emptyList();
 		suppressGroupStorageDiscoveryUntilClosed = false;
+		bankTagUpdatedForCurrentGroupStorageOpen = false;
 		panel.updateItems(Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
 	}
 
@@ -270,6 +291,17 @@ public class GroupStorageTrackerPlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onWidgetClosed(WidgetClosed event)
+	{
+		int groupId = event.getGroupId();
+		if (event.isUnload() &&
+			(groupId == InterfaceID.SHARED_BANK || groupId == InterfaceID.SHARED_BANK_SIDE))
+		{
+			bankTagUpdatedForCurrentGroupStorageOpen = false;
+		}
+	}
+
+	@Subscribe
 	public void onScriptPostFired(ScriptPostFired event)
 	{
 		int scriptId = event.getScriptId();
@@ -277,6 +309,11 @@ public class GroupStorageTrackerPlugin extends Plugin
 		{
 			refreshGroupStorageItems(client.getItemContainer(InventoryID.INV_GROUP_TEMP), true);
 			recalibrate();
+			if (!bankTagUpdatedForCurrentGroupStorageOpen)
+			{
+				bankTagUpdatedForCurrentGroupStorageOpen = true;
+				synchronizeBankTag(false);
+			}
 		}
 		else if (scriptId == ScriptID.BANKMAIN_FINISHBUILDING)
 		{
@@ -419,8 +456,13 @@ public class GroupStorageTrackerPlugin extends Plugin
 			}
 		}
 
+		boolean trackedItemSetChanged = !getItemIds(displayItems).equals(getItemIds(items));
 		displayItems = Collections.unmodifiableList(new ArrayList<>(items));
 		panel.updateItems(automaticallyTracked, manuallyIncluded, excluded);
+		if (trackedItemSetChanged)
+		{
+			synchronizeBankTag(false);
+		}
 	}
 
 	List<GroupStorageTrackedItem> getMissingItems()
@@ -435,6 +477,181 @@ public class GroupStorageTrackerPlugin extends Plugin
 		}
 
 		return missingItems;
+	}
+
+	private void createOrUpdateBankTag()
+	{
+		clientThread.invokeLater(() -> synchronizeBankTag(true));
+	}
+
+	private void synchronizeBankTag(boolean createIfMissing)
+	{
+		BankTagsService bankTagsService = getActiveBankTagsService();
+		if (bankTagsService == null)
+		{
+			return;
+		}
+
+		String bankTag = Text.standardize(BANK_TAG_NAME);
+		String configuredTabs = configManager.getConfiguration(BANK_TAGS_CONFIG_GROUP, BANK_TAGS_TABS_KEY);
+		List<String> tabs = new ArrayList<>(Text.fromCSV(configuredTabs == null ? "" : configuredTabs));
+		boolean tabExists = containsBankTag(tabs, bankTag);
+		boolean tabCreated = false;
+
+		String itemConfigurationPrefix = BANK_TAGS_CONFIG_GROUP + "." + BANK_TAGS_ITEM_KEY_PREFIX;
+		List<String> itemConfigurationKeys = new ArrayList<>(
+			configManager.getConfigurationKeys(itemConfigurationPrefix));
+		Set<Integer> targetItemIds = getBankTagItemIds(displayItems);
+		Set<Integer> itemsToAdd = new HashSet<>(targetItemIds);
+		boolean itemTagExists = false;
+		for (String fullKey : itemConfigurationKeys)
+		{
+			String key = fullKey.substring(BANK_TAGS_CONFIG_GROUP.length() + 1);
+			if (containsBankTag(getConfiguredBankTags(key), bankTag))
+			{
+				itemTagExists = true;
+			}
+		}
+
+		if (!createIfMissing && !tabExists && !itemTagExists)
+		{
+			return;
+		}
+
+		if (createIfMissing && !tabExists)
+		{
+			tabs.add(bankTag);
+			configManager.setConfiguration(BANK_TAGS_CONFIG_GROUP, BANK_TAGS_TABS_KEY, Text.toCSV(tabs));
+			tabExists = true;
+			tabCreated = true;
+		}
+
+		if (tabExists)
+		{
+			configManager.setConfiguration(
+				BANK_TAGS_CONFIG_GROUP,
+				BANK_TAGS_ICON_KEY_PREFIX + bankTag,
+				ItemID.GROUP_IRONMAN_HELM);
+		}
+
+		boolean itemsChanged = false;
+		for (String fullKey : itemConfigurationKeys)
+		{
+			String key = fullKey.substring(BANK_TAGS_CONFIG_GROUP.length() + 1);
+			List<String> itemTags = getConfiguredBankTags(key);
+			if (!containsBankTag(itemTags, bankTag))
+			{
+				continue;
+			}
+
+			int itemId = Integer.parseInt(fullKey.substring(itemConfigurationPrefix.length()));
+			if (itemsToAdd.remove(itemId))
+			{
+				continue;
+			}
+
+			if (itemTags.removeIf(tag -> bankTag.equals(Text.standardize(tag))))
+			{
+				saveConfiguredBankTags(key, itemTags);
+				itemsChanged = true;
+			}
+		}
+
+		for (int itemId : itemsToAdd)
+		{
+			String key = BANK_TAGS_ITEM_KEY_PREFIX + itemId;
+			List<String> itemTags = getConfiguredBankTags(key);
+			if (!containsBankTag(itemTags, bankTag))
+			{
+				itemTags.add(bankTag);
+				saveConfiguredBankTags(key, itemTags);
+				itemsChanged = true;
+			}
+		}
+
+		String activeTag = bankTagsService.getActiveTag();
+		if (itemsChanged && activeTag != null && bankTag.equals(Text.standardize(activeTag)))
+		{
+			bankTagsService.openBankTag(bankTag, BankTagsService.OPTION_ALLOW_MODIFICATIONS);
+		}
+		else if (tabCreated)
+		{
+			clientThread.invokeLater(this::refreshOpenBank);
+		}
+	}
+
+	private BankTagsService getActiveBankTagsService()
+	{
+		for (Plugin plugin : pluginManager.getPlugins())
+		{
+			if (BANK_TAGS_PLUGIN_NAME.equals(plugin.getName()) &&
+				pluginManager.isPluginActive(plugin) &&
+				plugin instanceof BankTagsService)
+			{
+				return (BankTagsService) plugin;
+			}
+		}
+
+		return null;
+	}
+
+	private static Set<Integer> getBankTagItemIds(Collection<GroupStorageTrackedItem> items)
+	{
+		Set<Integer> itemIds = new HashSet<>();
+		for (GroupStorageTrackedItem item : items)
+		{
+			// Bank Tags uses negative IDs for variation tags. This keeps charged,
+			// degraded, ornamented, and other interchangeable forms in the same tag.
+			itemIds.add(-Math.abs(item.getItemId()));
+		}
+
+		return itemIds;
+	}
+
+	private void refreshOpenBank()
+	{
+		Widget bank = client.getWidget(InterfaceID.Bankmain.UNIVERSE);
+		if (bank != null)
+		{
+			client.createScriptEventBuilder(bank.getOnLoadListener())
+				.setSource(bank)
+				.build()
+				.run();
+		}
+	}
+
+	private List<String> getConfiguredBankTags(String key)
+	{
+		String configuredTags = configManager.getConfiguration(BANK_TAGS_CONFIG_GROUP, key);
+		return new ArrayList<>(Text.fromCSV(configuredTags == null ? "" : configuredTags));
+	}
+
+	private void saveConfiguredBankTags(String key, List<String> tags)
+	{
+		if (tags.isEmpty())
+		{
+			configManager.unsetConfiguration(BANK_TAGS_CONFIG_GROUP, key);
+		}
+		else
+		{
+			configManager.setConfiguration(BANK_TAGS_CONFIG_GROUP, key, Text.toCSV(tags));
+		}
+	}
+
+	private static boolean containsBankTag(Collection<String> tags, String bankTag)
+	{
+		return tags.stream().anyMatch(tag -> bankTag.equals(Text.standardize(tag)));
+	}
+
+	private static Set<Integer> getItemIds(Collection<GroupStorageTrackedItem> items)
+	{
+		Set<Integer> itemIds = new HashSet<>();
+		for (GroupStorageTrackedItem item : items)
+		{
+			itemIds.add(item.getItemId());
+		}
+
+		return itemIds;
 	}
 
 	boolean isTrackedInventoryItem(int itemId)
