@@ -34,12 +34,15 @@ Once installed, the plugin is available via the Group Ironman icon in the RuneLi
 
 Clicking on the sidebar icon shows a window with:
 
+- a `Create/Update Bank Tag` button that synchronizes all active tracked items with a `Group Storage Tracker` tab in RuneLite's Bank Tags plugin
 - items currently not in Group Storage
 - a collapsible `Manually Included Items` section
 - a collapsible `Excluded Items` section with a `Re-Include` button for each item
 - a collapsible section for group storage items currently tracked.
 - item name, location, quantity, and GE value
 - an `Exclude` action for excluding items from the tracking system
+
+The Bank Tag stays synchronized as items are included, excluded, reset, or removed by the value threshold. It is also refreshed whenever Group Storage is opened, provided it already exists. Charged, degraded, recoloured, and other equivalent item variants share the same tag. Explicitly excluded items are omitted, and synchronization does nothing while Bank Tags is unavailable or disabled.
 
 ## Including Items
 
