@@ -80,8 +80,8 @@ import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.Text;
 
 @PluginDescriptor(
-	name = "Group Storage Tracker (Dev)",
-	configName = "groupStorageTrackerDev",
+	name = "Group Storage Tracker",
+	configName = "groupStorageTracker",
 	description = "Tracks group storage items that are currently in your bank, inventory, or equipment",
 	tags = {"bank", "gim", "group", "items", "storage"},
 	conflicts = {"Group Storage Tracker"}
