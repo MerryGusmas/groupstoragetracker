@@ -746,7 +746,7 @@ public class GroupStorageTrackerPlugin extends Plugin
 				return outsideCompare;
 			}
 
-			int valueCompare = Integer.compare(b.getGePrice(), a.getGePrice());
+			int valueCompare = Long.compare(b.getGePrice(), a.getGePrice());
 			if (valueCompare != 0)
 			{
 				return valueCompare;

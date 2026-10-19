@@ -31,7 +31,7 @@ class GroupStorageTrackedItem
 {
 	int itemId;
 	String name;
-	int gePrice;
+	long gePrice;
 	boolean stackable;
 	int bankQuantity;
 	int inventoryQuantity;
